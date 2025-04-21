@@ -29,6 +29,7 @@ def toValue(card):
 
 
     return(value)        
+    ##    if card[-1] == "j" or card[-1] == "q" or card[-1] == "k":
 
 def calculateDecision(c1, c2, d1):
     v1 = toValue(c1)

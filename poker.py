@@ -280,6 +280,7 @@ def calculate_best_decision(my_hand, community_cards, num_opponents, pot_size, c
     # p = probability of winning
     # q = probability of losing (1-p)
     # b = odds received (pot / bet)
+    # In this case, we consider the odds as the potential pot size divided by the total loss
 
     # Calculate odds for the Kelly criterion, handling the case where we have no money at stake
     if potential_total_loss > 0:
