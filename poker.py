@@ -235,7 +235,7 @@ def compare_hand_info(hand1_info, hand2_info):
         return 0
 
 
-def calculate_best_decision(my_hand, community_cards, num_opponents, pot_size, current_bet, my_stack, previously_betted, opponent_stacks=None, num_simulations=1000):
+def calculate_best_decision(my_hand, community_cards, num_opponents, pot_size, current_bet, my_stack, previously_betted, opponent_stacks=None, num_simulations=10000):
     """
     Calculate the expected value (EV) of different decisions and return the best one.
     Uses Kelly criterion for optimal bet sizing.
@@ -260,16 +260,13 @@ def calculate_best_decision(my_hand, community_cards, num_opponents, pot_size, c
     # Calculate EV of folding (always 0)
     fold_ev = 0
 
-
-    # Calcualte total staked
-    potential_total_loss = previously_betted+current_bet
-    potential_pot_size = pot_size+current_bet
+    # Calculate total staked
+    potential_total_loss = previously_betted + current_bet
+    potential_pot_size = pot_size + current_bet
     
     # Calculate EV of calling
-    call_ev = win_probability * (potential_pot_size) - (1 - win_probability) * potential_total_loss
 
-    if potential_total_loss == 0:
-        return("check", call_ev)
+    call_ev = win_probability * (potential_pot_size) - (1 - win_probability) * potential_total_loss
     
     # If we can't even call, we must fold or go all-in
     if current_bet >= my_stack:
@@ -283,15 +280,26 @@ def calculate_best_decision(my_hand, community_cards, num_opponents, pot_size, c
     # p = probability of winning
     # q = probability of losing (1-p)
     # b = odds received (pot / bet)
+
+    # Calculate odds for the Kelly criterion, handling the case where we have no money at stake
+    if potential_total_loss > 0:
+        odds = potential_pot_size / potential_total_loss
+        # Kelly formula: (bp - q) / b, where p = win probability, q = 1-p, b = odds
+        kelly_fraction = (odds * win_probability - (1 - win_probability)) / odds
+        # Limit Kelly to a more conservative fraction (30% Kelly for risk management)
+        kelly_fraction = max(0, kelly_fraction * 0.1)
+    else:
+        # Default to a conservative value if we have no money at stake
+        kelly_fraction = win_probability * 0.1
     
-    print("Potential Pot Size:", potential_pot_size)
-    print("Potential Total Loss:", potential_total_loss)
-    odds = potential_pot_size / potential_total_loss
-    kelly_fraction = (odds * win_probability - (1 - win_probability)) / odds
+    # Kelly-recommended bet size based on our entire stack
+    optimal_total_bet = min(kelly_fraction * my_stack, my_stack)
     
-    # Limit Kelly to a more conservative fraction (half Kelly)
-    kelly_fraction = max(0, kelly_fraction * 0.3)
+    # Calculate how much more we need to add (raise amount)
+    optimal_raise = optimal_total_bet - previously_betted
     
+    # Ensure it's at least the current bet (to call)
+    kelly_bet = max(optimal_raise, current_bet)
     # Kelly-recommended bet size
     kelly_bet = min(kelly_fraction * my_stack, my_stack)
     
@@ -320,7 +328,10 @@ def calculate_best_decision(my_hand, community_cards, num_opponents, pot_size, c
     
     # If Kelly doesn't suggest a raise or it's not favorable
     if call_ev > fold_ev:
-        return ("call", call_ev)
+        if current_bet > 0:
+            return ("call", call_ev)
+        elif current_bet == 0:
+            return ("check", call_ev)
     else:
         return ("fold", fold_ev)
     
@@ -406,7 +417,7 @@ def scrape_pokernow(game_url):
     previous_bet = 0
     last_cards = []
     while True:
-        time.sleep(1)
+        time.sleep(3)
     
         # Wait for the table to load completely
         WebDriverWait(driver, 10).until(
@@ -570,47 +581,47 @@ def scrape_pokernow(game_url):
                     opponent_stacks,
                     num_simulations=500  # Use fewer simulations for faster results
                 )
-            except:
-                pass
             
-            print("="*50)
-            print(f"RECOMMENDED ACTION: {best_decision[0]}")
-            print(f"Expected Value: {best_decision[1]:.2f}")
-            print("="*50)
-            
-            # Look for buttons to click based on decision
-            try:
-                decision_action = best_decision[0].split()[0].lower()
+                print("="*50)
+                print(f"RECOMMENDED ACTION: {best_decision[0]}")
+                print(f"Expected Value: {best_decision[1]:.2f}")
+                print("="*50)
                 
-                if decision_action == "fold":
-                    #fold_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.fold")
-                    print("Fold button found, would click in automated version")
-                    # fold_button.click()
+                # Look for buttons to click based on decision
+                try:
+                    decision_action = best_decision[0].split()[0].lower()
                     
-                elif decision_action == "call" or decision_action == "check":
-                    #call_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.call")
-                    print("Call button found, would click in automated version")
-                    # call_button.click()
-                    
-                elif decision_action == "raise" or decision_action == "bet":
-                    # Get the raise amount
-                    raise_amount = float(best_decision[0].split()[1])
-                    #raise_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.raise")
-                    print(f"Raise button found, would set amount to {raise_amount} and click in automated version")
-                    # Set the raise value in the slider or input
-                    # raise_button.click()
-                    
-                elif decision_action == "all-in":
-                    #all_in_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.allin")
-                    print("All-in button found, would click in automated version")
-                    # all_in_button.click()
+                    if decision_action == "fold":
+                        #fold_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.fold")
+                        print("Fold button found, would click in automated version")
+                        # fold_button.click()
+                        
+                    elif decision_action == "call" or decision_action == "check":
+                        #call_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.call")
+                        print("Call button found, would click in automated version")
+                        # call_button.click()
+                        
+                    elif decision_action == "raise" or decision_action == "bet":
+                        # Get the raise amount
+                        raise_amount = float(best_decision[0].split()[1])
+                        #raise_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.raise")
+                        print(f"Raise button found, would set amount to {raise_amount} and click in automated version")
+                        # Set the raise value in the slider or input
+                        # raise_button.click()
+                        
+                    elif decision_action == "all-in":
+                        #all_in_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.allin")
+                        print("All-in button found, would click in automated version")
+                        # all_in_button.click()
 
-                elif decision_action == "check":
-                    check_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.check")
-                    print("Check button found, would click in automated version")
-                    # check_button.click()
+                    elif decision_action == "check":
+                        check_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.check")
+                        print("Check button found, would click in automated version")
+                        # check_button.click()
+                except Exception as e:
+                    print(f"Error interacting with buttons: {e}")
             except Exception as e:
-                print(f"Error interacting with buttons: {e}")
+                print(f"Error calculating best decision: {e}")
 
             print("\n\n\n\n")
         
