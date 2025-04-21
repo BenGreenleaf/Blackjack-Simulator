@@ -1,6 +1,15 @@
 import random
 import itertools
 from collections import Counter
+import requests
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import time
+import re
 
 def determine_hand(hand):
     """
@@ -226,7 +235,7 @@ def compare_hand_info(hand1_info, hand2_info):
         return 0
 
 
-def calculate_best_decision(my_hand, community_cards, num_opponents, pot_size, current_bet, my_stack, opponent_stacks=None, num_simulations=1000):
+def calculate_best_decision(my_hand, community_cards, num_opponents, pot_size, current_bet, my_stack, previously_betted, opponent_stacks=None, num_simulations=1000):
     """
     Calculate the expected value (EV) of different decisions and return the best one.
     Uses Kelly criterion for optimal bet sizing.
@@ -250,9 +259,14 @@ def calculate_best_decision(my_hand, community_cards, num_opponents, pot_size, c
     
     # Calculate EV of folding (always 0)
     fold_ev = 0
+
+
+    # Calcualte total staked
+    potential_total_loss = previously_betted+current_bet
+    potential_pot_size = pot_size+current_bet
     
     # Calculate EV of calling
-    call_ev = win_probability * (pot_size + current_bet) - (1 - win_probability) * current_bet
+    call_ev = win_probability * (potential_pot_size) - (1 - win_probability) * potential_total_loss
     
     # If we can't even call, we must fold or go all-in
     if current_bet >= my_stack:
@@ -267,7 +281,9 @@ def calculate_best_decision(my_hand, community_cards, num_opponents, pot_size, c
     # q = probability of losing (1-p)
     # b = odds received (pot / bet)
     
-    odds = pot_size / current_bet if current_bet > 0 else float('inf')
+    print("Potential Pot Size:", potential_pot_size)
+    print("Potential Total Loss:", potential_total_loss)
+    odds = potential_pot_size / potential_total_loss
     kelly_fraction = (odds * win_probability - (1 - win_probability)) / odds
     
     # Limit Kelly to a more conservative fraction (half Kelly)
@@ -306,35 +322,277 @@ def calculate_best_decision(my_hand, community_cards, num_opponents, pot_size, c
         return ("fold", fold_ev)
     
 
-# Example usage of calculate_best_decision
-if __name__ == "__main__":
-    # Example hands
-    # Format: (rank, suit)
-    # Suits: ♠ (spades), ♥ (hearts), ♦ (diamonds), ♣ (clubs)
+def parse_card(card_text):
+    """Parse a card string like '10♠' into ('10', '♠')"""
+    if not card_text:
+        return None
     
-    # Example 1: Strong starting hand pre-flop
-    my_hand = [('A', '♠'), ('A', '♥')]  # Pocket aces
-    community_cards = []  # Pre-flop
-    win_prob = calculate_winning_probability(my_hand, community_cards, 3)
-    print(f"Pocket aces probability against 3 opponents: {win_prob:.4f}")
+    suits = ['♠', '♥', '♦', '♣']
+    suit = next((s for s in suits if s in card_text), None)
+    if not suit:
+        return None
+        
+    rank = card_text.replace(suit, '')
+    return (rank, suit)
+
+def scrape_pokernow(game_url):
+    """
+    Scrape the current game state from PokerNow website
     
-    decision, ev = calculate_best_decision(my_hand, community_cards, 3, pot_size=100, current_bet=50, my_stack=1000)
-    print(f"Best decision: {decision} (EV: {ev:.2f})\n")
+    Args:
+        game_url: URL of the PokerNow game
+        
+    Returns:
+        Dictionary containing game state information:
+        {
+            'my_hand': List of 2 tuples (rank, suit),
+            'community_cards': List of 0-5 tuples (rank, suit),
+            'pot_size': Current pot size (float),
+            'current_bet': Current bet to call (float),
+            'my_stack': Your stack size (float),
+            'num_opponents': Number of active opponents (int),
+            'opponent_stacks': List of opponent stack sizes
+        }
+    """
+    # Set up headless Chrome
+    chrome_options = Options()
+    #chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--disable-gpu")
     
-    # Example 2: With flop
-    my_hand = [('K', '♥'), ('Q', '♥')]  # King-Queen suited
-    community_cards = [('J', '♥'), ('10', '♠'), ('2', '♣')]  # Flop with open-ended straight draw
-    win_prob = calculate_winning_probability(my_hand, community_cards, 2)
-    print(f"K♥-Q♥ with flop J♥-10♠-2♣ against 2 opponents: {win_prob:.4f}")
+    driver = webdriver.Chrome(options=chrome_options)
     
-    decision, ev = calculate_best_decision(my_hand, community_cards, 2, pot_size=250, current_bet=75, my_stack=800)
-    print(f"Best decision: {decision} (EV: {ev:.2f})\n")
+
+    driver.get(game_url)
     
-    # Example 3: With turn
-    my_hand = [('7', '♣'), ('7', '♠')]  # Pocket sevens
-    community_cards = [('2', '♥'), ('7', '♥'), ('K', '♠'), ('A', '♦')]  # Turn with trips
-    win_prob = calculate_winning_probability(my_hand, community_cards, 1)
-    print(f"Pocket 7s with turn 2♥-7♥-K♠-A♦ against 1 opponent: {win_prob:.4f}")
+    # Wait for the seat button to be available
+    try:
+        seat_button = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.CLASS_NAME, "table-player-seat-button"))
+        )
+        seat_button.click()
+        # Wait briefly for any animations or state changes after clicking
+        time.sleep(1)
+
+        # Find the form for entering player details
+        form = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "form-1"))
+        )
+
+        nickname_input = form.find_element(By.CSS_SELECTOR, "div:nth-child(1) > input[type=text]")
+        nickname_input.clear()
+        nickname_input.send_keys("guest")
+        time.sleep(1)
+        # Find the stack input and enter a value
+        stack_input = form.find_element(By.CSS_SELECTOR, "div:nth-child(2) > input[type=text]")
+        stack_input.clear()
+        stack_input.send_keys("1000")  # Entering a default stack value of 1000
+        time.sleep(1)
+
+        # Click the "Take the Seat" button
+        submit_button = form.find_element(By.CSS_SELECTOR, "button")
+        submit_button.click()
+
+        # Wait for the form to be processed
+        time.sleep(2)
+    except Exception as e:
+        print(f"Error clicking seat button: {e}")
+
+    time.sleep(20)
+    # Let's extract game state information from the page
+    previously_betted = 0
+    previous_bet = 0
+    last_cards = []
+    while True:
+        time.sleep(1)
     
-    decision, ev = calculate_best_decision(my_hand, community_cards, 1, pot_size=400, current_bet=150, my_stack=600)
-    print(f"Best decision: {decision} (EV: {ev:.2f})")
+        # Wait for the table to load completely
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "seats"))
+        )
+        
+        # Find my cards
+        my_hand = []
+        my_player = driver.find_element(By.CLASS_NAME, "you-player")
+        card_containers = my_player.find_elements(By.CLASS_NAME, "card-container.flipped")
+        
+        for card_container in card_containers:
+            card_value = card_container.find_element(By.CLASS_NAME, "value").text
+            card_suit = card_container.find_element(By.CSS_SELECTOR, "div > div.card > span:nth-child(3)").text
+            
+            # Convert suit text to symbol
+            suit_map = {'h': '♥', 'd': '♦', 'c': '♣', 's': '♠'}
+            suit_symbol = suit_map.get(card_suit.lower(), card_suit)
+            
+            my_hand.append((card_value, suit_symbol))
+        
+        if my_hand != last_cards:
+            previously_betted = 0
+
+        last_cards = my_hand.copy()
+
+        # Find community cards
+        community_cards = []
+        try:
+            # Find the table cards container
+            community_cards_container = driver.find_element(By.CLASS_NAME, "table-cards")
+            community_card_containers = community_cards_container.find_elements(By.CLASS_NAME, "card-container.flipped")
+            
+            for card_container in community_card_containers:
+                # Find the card element
+                card_element = card_container.find_element(By.CLASS_NAME, "card")
+                card_value = card_element.find_element(By.CLASS_NAME, "value").text
+                card_suit = card_element.find_element(By.CLASS_NAME, "suit:not(.sub-suit)").text
+                
+                # Convert suit text to symbol
+                suit_map = {'h': '♥', 'd': '♦', 'c': '♣', 's': '♠'}
+                suit_symbol = suit_map.get(card_suit.lower(), card_suit)
+                
+                # Handle special card values that might appear in different formats
+                if card_value == "T":
+                    card_value = "10"
+                    
+                community_cards.append((card_value, suit_symbol))
+        except Exception as e:
+            print(f"Error getting community cards: {e}")
+            # Might not have community cards yet
+            pass
+        
+        # Get pot size
+        try:
+            pot_container = driver.find_element(By.CLASS_NAME, "table-pot-size")
+            
+            # First try to get the total from add-on-container if it exists
+            try:
+                add_on_container = pot_container.find_element(By.CLASS_NAME, "add-on-container")
+                pot_value_element = add_on_container.find_element(By.CSS_SELECTOR, ".add-on .chips-value .normal-value")
+                pot_size = float(pot_value_element.text)
+            except:
+                # If add-on-container doesn't exist or has issues, fall back to the main value
+                pot_value_element = pot_container.find_element(By.CSS_SELECTOR, ".main-value .chips-value .normal-value")
+                pot_size = float(pot_value_element.text)
+            
+        except Exception as e:
+            print(f"Error getting pot size: {e}")
+            pot_size = 0
+        
+        # Get my stack
+        my_stack_text = my_player.find_element(By.CLASS_NAME, "table-player-stack").text
+        my_stack = float(re.search(r'\d+', my_stack_text).group())
+
+        try:
+            bet_amount = int(my_player.find_element(By.CSS_SELECTOR, "p > span > span").text) + previously_betted
+        except:
+            previously_betted = bet_amount
+            print("No bet amount found, setting to 0")
+        
+        # Get current bet to call
+        try:
+            # First try to find the 'Call' button that shows the bet amount
+            call_buttons = driver.find_elements(By.CSS_SELECTOR, "button.action-button.call")
+            if call_buttons and len(call_buttons) > 0:
+                call_text = call_buttons[0].text
+                # Extract number from text like "Call 20"
+                match = re.search(r'CALL (\d+)', call_text)
+                if match:
+                    current_bet = float(match.group(1))
+                else:
+                    current_bet = 0
+            else:
+                # If no call button with amount, look for bet-to-call elements
+                bet_to_call_elements = driver.find_elements(By.CLASS_NAME, "bet-to-call")
+                if bet_to_call_elements:
+                    current_bet_text = bet_to_call_elements[0].text
+                    current_bet = float(re.search(r'\d+', current_bet_text).group())
+                else:
+                    current_bet = 0
+        except Exception as e:
+            print(f"Error getting current bet: {e}")
+            current_bet = 0
+        
+        # Count active opponents and their stacks
+        opponent_stacks = []
+        active_players = driver.find_elements(By.CLASS_NAME, "table-player:not(.you-player)")
+        num_opponents = 0
+        
+        for player in active_players:
+            try:
+                # Check if the player is active (has cards or has folded but still in the hand)
+                has_cards = len(player.find_elements(By.CLASS_NAME, "table-player-cards")) > 0
+                is_folded = 'folded' in player.get_attribute('class')
+                
+                if has_cards:
+                    num_opponents += 1
+                    stack_text = player.find_element(By.CLASS_NAME, "table-player-stack").text
+                    stack = float(re.search(r'\d+', stack_text).group())
+                    opponent_stacks.append(stack)
+            except:
+                pass
+        
+        # Print the extracted information for debugging
+        print("My hand:", my_hand)
+        print("Community cards:", community_cards)
+        print("Pot size:", pot_size)
+        print("Potential Current bet:", current_bet)
+        print("My stack:", my_stack)
+        print("Number of opponents:", num_opponents)
+        print("Opponent stacks:", opponent_stacks)
+        print("Total Betted:", previously_betted)
+        print("\n\n\n\n")
+
+        # Use the extracted data to calculate the best decision
+        if my_hand and len(my_hand) == 2:  # Only make a decision if we have hole cards
+            try:
+                best_decision = calculate_best_decision(
+                    my_hand,
+                    community_cards,
+                    num_opponents,
+                    pot_size,
+                    current_bet,
+                    my_stack,
+                    bet_amount,
+                    opponent_stacks,
+                    num_simulations=500  # Use fewer simulations for faster results
+                )
+            except:
+                pass
+            
+            print("="*50)
+            print(f"RECOMMENDED ACTION: {best_decision[0]}")
+            print(f"Expected Value: {best_decision[1]:.2f}")
+            print("="*50)
+            
+            # Look for buttons to click based on decision
+            try:
+                decision_action = best_decision[0].split()[0].lower()
+                
+                if decision_action == "fold":
+                    fold_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.fold")
+                    print("Fold button found, would click in automated version")
+                    # fold_button.click()
+                    
+                elif decision_action == "call" or decision_action == "check":
+                    call_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.call")
+                    print("Call button found, would click in automated version")
+                    # call_button.click()
+                    
+                elif decision_action == "raise" or decision_action == "bet":
+                    # Get the raise amount
+                    raise_amount = float(best_decision[0].split()[1])
+                    raise_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.raise")
+                    print(f"Raise button found, would set amount to {raise_amount} and click in automated version")
+                    # Set the raise value in the slider or input
+                    # raise_button.click()
+                    
+                elif decision_action == "all-in":
+                    all_in_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.allin")
+                    print("All-in button found, would click in automated version")
+                    # all_in_button.click()
+            except Exception as e:
+                print(f"Error interacting with buttons: {e}")
+        
+
+    
+
+
+
+scrape_pokernow("https://www.pokernow.club/games/pgllNVxLe3-9JWSTKvVUzp7Ol")
