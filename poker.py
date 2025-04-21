@@ -267,6 +267,9 @@ def calculate_best_decision(my_hand, community_cards, num_opponents, pot_size, c
     
     # Calculate EV of calling
     call_ev = win_probability * (potential_pot_size) - (1 - win_probability) * potential_total_loss
+
+    if potential_total_loss == 0:
+        return("check", call_ev)
     
     # If we can't even call, we must fold or go all-in
     if current_bet >= my_stack:
@@ -508,6 +511,21 @@ def scrape_pokernow(game_url):
         except Exception as e:
             print(f"Error getting current bet: {e}")
             current_bet = 0
+
+        # Check if we can check (button is enabled)
+        can_check = False
+        try:
+            check_buttons = driver.find_elements(By.CSS_SELECTOR, "button.action-button.check")
+            if check_buttons:
+                check_button = check_buttons[0]
+                can_check = not check_button.get_attribute('disabled')
+            else:
+                print("Check button not found")
+        except Exception as e:
+            print(f"Error checking if we can check: {e}")
+
+        if can_check:
+            current_bet = 0  # If we can check, set current bet to 0
         
         # Count active opponents and their stacks
         opponent_stacks = []
@@ -537,7 +555,6 @@ def scrape_pokernow(game_url):
         print("Number of opponents:", num_opponents)
         print("Opponent stacks:", opponent_stacks)
         print("Total Betted:", previously_betted)
-        print("\n\n\n\n")
 
         # Use the extracted data to calculate the best decision
         if my_hand and len(my_hand) == 2:  # Only make a decision if we have hole cards
@@ -549,7 +566,7 @@ def scrape_pokernow(game_url):
                     pot_size,
                     current_bet,
                     my_stack,
-                    bet_amount,
+                    previously_betted,
                     opponent_stacks,
                     num_simulations=500  # Use fewer simulations for faster results
                 )
@@ -566,29 +583,36 @@ def scrape_pokernow(game_url):
                 decision_action = best_decision[0].split()[0].lower()
                 
                 if decision_action == "fold":
-                    fold_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.fold")
+                    #fold_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.fold")
                     print("Fold button found, would click in automated version")
                     # fold_button.click()
                     
                 elif decision_action == "call" or decision_action == "check":
-                    call_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.call")
+                    #call_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.call")
                     print("Call button found, would click in automated version")
                     # call_button.click()
                     
                 elif decision_action == "raise" or decision_action == "bet":
                     # Get the raise amount
                     raise_amount = float(best_decision[0].split()[1])
-                    raise_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.raise")
+                    #raise_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.raise")
                     print(f"Raise button found, would set amount to {raise_amount} and click in automated version")
                     # Set the raise value in the slider or input
                     # raise_button.click()
                     
                 elif decision_action == "all-in":
-                    all_in_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.allin")
+                    #all_in_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.allin")
                     print("All-in button found, would click in automated version")
                     # all_in_button.click()
+
+                elif decision_action == "check":
+                    check_button = driver.find_element(By.CSS_SELECTOR, "button.action-button.check")
+                    print("Check button found, would click in automated version")
+                    # check_button.click()
             except Exception as e:
                 print(f"Error interacting with buttons: {e}")
+
+            print("\n\n\n\n")
         
 
     
